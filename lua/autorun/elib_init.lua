@@ -195,6 +195,10 @@ if CLIENT then
     return
 end
 
+// Clear queue on lua_refresh so it rebuilds fresh
+Elib._SecureClientQueue = {}
+Elib._SecureClientQueueSet = {}
+
 util.AddNetworkString("Elib.Secure.Auth")
 util.AddNetworkString("Elib.Secure.Request")
 util.AddNetworkString("Elib.Secure.Boot")
@@ -277,6 +281,15 @@ net.Receive("Elib.Secure.Request", function(_, ply)
         net.WriteUInt(len, 24)
         net.WriteData(encoded, len)
     net.Send(ply)
+end)
+
+// Manual refresh for development
+concommand.Add("elib_secure_rebuild", function(ply)
+    if IsValid(ply) and not ply:IsAdmin() then return end
+
+    SECURE_COMPRESSED = nil
+    buildSecurePayload()
+    print("[Elib] Secure payload rebuilt")
 end)
 
 markFullyLoaded()
