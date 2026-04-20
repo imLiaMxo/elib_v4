@@ -592,7 +592,7 @@ function MENU:Populate()
         self.Sidebar:SelectItem(addons[1].name)
     end
 end
-.
+
 function MENU:RefreshDirtyState()
     local count = 0
     for _, row in ipairs(self.Page.Rows) do
