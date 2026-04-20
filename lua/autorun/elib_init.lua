@@ -101,8 +101,7 @@ Elib.FullyLoaded = true // set after so late Elib.FullyLoaded hooks still fire o
 
 if CLIENT then return end
 
-MsgC(Color(207, 144, 49), "\n[Elib] ",
-     Color(230, 230, 230), "version " .. Elib.Version .. " loaded\n")
+MsgC(Color(207, 144, 49), "\n[Elib] ", Color(230, 230, 230), "version " .. Elib.Version .. " loaded\n")
 
 // Workshop content
 resource.AddWorkshop("2468112758")
@@ -120,21 +119,11 @@ hook.Add("Think", "Elib.VersionChecker", function()
         local colText  = Color(230, 230, 230)
         local colDim   = Color(180, 180, 180)
 
-        MsgC(colBrand, "\n[Elib] ",
-             colText, "Update available\n")
-
+        MsgC(colBrand, "\n[Elib] ", colText, "Update available\n")
         MsgC(colDim,  "──────────────────────────────\n")
-
-        MsgC(colBrand, "➤ ",
-             colText, "Current: ", colDim, Elib.Version, "\n")
-
-        MsgC(colBrand, "➤ ",
-             colText, "Latest:  ", colBrand, remote, "\n")
-
-        MsgC(colBrand, "➤ ",
-             colText, "Get it: ",
-             colDim, "https://github.com/imLiaMxo/elib_v4\n")
-
+        MsgC(colBrand, "➤ ", colText, "Current: ", colDim, Elib.Version, "\n")
+        MsgC(colBrand, "➤ ", colText, "Latest:  ", colBrand, remote, "\n")
+        MsgC(colBrand, "➤ ", colText, "Get it: ", colDim, "https://github.com/imLiaMxo/elib_v4\n")
         MsgC(colDim,  "──────────────────────────────\n\n")
 
     end)
