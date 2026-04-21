@@ -22,3 +22,4 @@ Elib.OverrideDermaMenus = 0
 Elib.ActiveTheme   = Elib.ActiveTheme or "Default"
 Elib.Lang.Active   = Elib.Lang.Active or "en"
 Elib.Lang.Fallback = Elib.Lang.Fallback or "en"
+Elib.PopupOverride = Elib.PopupOverride or true

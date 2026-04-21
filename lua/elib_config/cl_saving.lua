@@ -1,26 +1,21 @@
-// Made by Eve Haddox & imLiaMxo
+// Made by Eve Haddox & imLiaMxo (rewritten to use gmod sql)
 
 local log = Elib.Config.Log
 local TABLE_NAME = "elib_config_client"
 
 /////////////////////////
-// Database
+// Database Init
 /////////////////////////
-local db = Elib.NewDatabase("Elib.Config.Client")
-db:Connect()
-Elib.Config.ClientDB = db
-
-/////////////////////////
-// Schema
-/////////////////////////
-db:CreateTable(TABLE_NAME, {
-    addon    = "TEXT",
-    category = "TEXT",
-    id       = "TEXT",
-    value    = "TEXT",
-    vtype    = "TEXT",
-    PRIMARY  = "KEY(addon, category, id)",
-})
+sql.Query([[
+    CREATE TABLE IF NOT EXISTS ]] .. TABLE_NAME .. [[ (
+        addon TEXT,
+        category TEXT,
+        id TEXT,
+        value TEXT,
+        vtype TEXT,
+        PRIMARY KEY (addon, category, id)
+    )
+]])
 
 /////////////////////////
 // serialization
@@ -51,11 +46,13 @@ local function deserialize(value, vtype)
     if vtype == "boolean" then return tobool(value) end
     if vtype == "number"  then return tonumber(value) end
     if vtype == "table"   then return util.JSONToTable(value or "") or {} end
+
     if vtype == "color" then
         local t = util.JSONToTable(value or "")
         if t then return Color(t.r or 255, t.g or 255, t.b or 255, t.a or 255) end
         return Color(255, 255, 255)
     end
+
     return value
 end
 
@@ -65,14 +62,20 @@ end
 local function persistClient(addon, category, id, value)
     local strValue, vtype = serialize(value)
 
-    local q = db:Format(
-        "INSERT OR REPLACE INTO " .. TABLE_NAME .. " (addon, category, id, value, vtype) VALUES ('%s', '%s', '%s', '%s', '%s')",
-        addon, category, id, strValue, vtype
+    local query = string.format(
+        "INSERT OR REPLACE INTO %s (addon, category, id, value, vtype) VALUES (%s, %s, %s, %s, %s)",
+        TABLE_NAME,
+        sql.SQLStr(addon),
+        sql.SQLStr(category),
+        sql.SQLStr(id),
+        sql.SQLStr(strValue),
+        sql.SQLStr(vtype)
     )
 
-    db:Query(q, nil, function(err)
-        log:Error("Client save failed: " .. tostring(err))
-    end)
+    local result = sql.Query(query)
+    if result == false then
+        log:Error("Client save failed: " .. sql.LastError())
+    end
 end
 
 /////////////////////////
@@ -99,26 +102,26 @@ end
 // Load from disk on boot
 /////////////////////////
 function Elib.Config.LoadClientSettings()
-    db:Select(TABLE_NAME, "*", nil, function(rows)
-        if not rows then return end
+    local rows = sql.Query("SELECT * FROM " .. TABLE_NAME)
 
-        for _, row in ipairs(rows) do
-            local value = deserialize(row.value, row.vtype)
+    if not rows then return end
 
-            local a = Elib.Config.Addons[row.addon]
-            if a and a.client and a.client[row.category] and a.client[row.category][row.id] then
-                a.client[row.category][row.id].value = value
+    for _, row in ipairs(rows) do
+        local value = deserialize(row.value, row.vtype)
 
-                local entry = a.client[row.category][row.id]
-                if entry.onComplete then
-                    local ok, err = pcall(entry.onComplete, value)
-                    if not ok then
-                        log:Warn("onComplete error (client load): " .. tostring(err))
-                    end
+        local a = Elib.Config.Addons[row.addon]
+        if a and a.client and a.client[row.category] and a.client[row.category][row.id] then
+            local entry = a.client[row.category][row.id]
+            entry.value = value
+
+            if entry.onComplete then
+                local ok, err = pcall(entry.onComplete, value)
+                if not ok then
+                    log:Warn("onComplete error (client load): " .. tostring(err))
                 end
             end
         end
-    end)
+    end
 end
 
 hook.Add("Elib.FullyLoaded", "Elib.Config.LoadClientSettings", function()
@@ -130,7 +133,7 @@ hook.Add("InitPostEntity", "Elib.Config.LoadClientSettings", function()
 end)
 
 /////////////////////////
-// Network receivers
+// Network receivers (unchanged)
 /////////////////////////
 local function applyUpdate(updated)
     for addonName, addonData in pairs(updated) do

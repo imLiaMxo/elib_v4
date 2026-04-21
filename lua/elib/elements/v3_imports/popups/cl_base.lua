@@ -14,7 +14,6 @@ function PANEL:Init()
     self.Frame:SetSize(450, 250)
     self.Frame:SetSizable(false)
     self.Frame:SetDraggable(false)
-    self.Frame:SetCanFullscreen(false)
     self.Frame:SetTitle("Popup")
     self.Frame.Open = function() end
     self.Frame:MakePopup()
@@ -25,7 +24,7 @@ function PANEL:Init()
 end
 
 function PANEL:Paint(w, h)
-    Elib.DrawBlur(self, 0, 0, w, h)
+    //Elib.DrawBlur(self, 0, 0, w, h)
     surface.SetDrawColor(Color(20, 20, 20, 150))
     surface.DrawRect(0, 0, w, h)
 end

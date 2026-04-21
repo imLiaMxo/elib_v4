@@ -630,19 +630,35 @@ function MENU:RevertAll()
 end
 
 function MENU:_promptSwitchWithDirty(targetAddon)
-    Derma_Query(
+    Elib.CreateQueryPopup(
         L("elib.config.switch.body"),
         L("elib.config.switch.title"),
-        L("elib.config.switch.save"), function()
-            self:SaveAll()
-            self.Page:LoadAddon(targetAddon)
-        end,
-        L("elib.config.switch.discard"), function()
-            self:RevertAll()
-            self.Page:LoadAddon(targetAddon)
-        end,
-        L("elib.config.switch.cancel"), function() end
+        {
+            {
+                text = L("elib.config.switch.save"),
+                callback = function()
+                    self:SaveAll()
+                    self.Page:LoadAddon(targetAddon)
+                end
+            },
+            {
+                text = L("elib.config.switch.discard"),
+                style = "outline",
+                callback = function()
+                    self:RevertAll()
+                    self.Page:LoadAddon(targetAddon)
+                end
+            },
+            {
+                text = L("elib.config.switch.cancel"),
+                style = "ghost",
+                callback = function()
+                    -- do nothing
+                end
+            }
+        }
     )
+
 end
 
 function MENU:OnClose()
@@ -672,3 +688,16 @@ function Elib.Config.OpenMenu()
 end
 
 concommand.Add("elib_config", function() Elib.Config.OpenMenu() end)
+
+Elib.GetImage("https://construct-cdn.physgun.com/images/5cfb8931-ed9d-4efe-a16b-7e9cc7c0952a.png")
+Elib.GetImage("https://img.itch.zone/aW1nLzc1ODI3ODkucG5n/315x250%23c/AWy5fF.png")
+
+hook.Add("ContextMenuCreated","Elib.context_button",function(context)
+    list.Set( "DesktopWindows", "Elib", {
+        title = "Elib Config",
+        icon = "data/elib/images/construct-cdn.physgun.com/images/5cfb8931-ed9d-4efe-a16b-7e9cc7c0952a.png",
+        init = function(icon, window)
+            RunConsoleCommand("elib_config")
+        end
+    })
+end)

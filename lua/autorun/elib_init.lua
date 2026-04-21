@@ -84,11 +84,12 @@ Elib.IncludeShared(corePath .. "sh_languages")
 Elib.IncludeServer(corePath .. "sv_database")
 Elib.IncludeShared("elib/sh_config")
 Elib.IncludeClient(corePath .. "cl_webimages")
+Elib.IncludeClient(corePath .. "cl_overrides")
 
 Elib.LoadDirectory("elib/themes")
 Elib.LoadDirectory("elib/languages")
 
-Elib.LoadDirectory("elib/elements")
+Elib.LoadDirectoryRecursive("elib/elements")
 Elib.IncludeShared("elib_config/sh_loader")
 
 Elib.IncludeShared("elib_demo/sh_demo")
