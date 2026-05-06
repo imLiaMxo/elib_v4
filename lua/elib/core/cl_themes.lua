@@ -72,6 +72,11 @@ hook.Add("Elib.FullyLoaded", "Elib.RegisterThemeConfig", function()
     end
 
     if Elib.Config and Elib.Config.AddValue then
+        Elib.Config:AddAddon("Elib", {
+            order = 1,
+            icon  = "https://cdn.novarp.uk/uploads/1777660733991-d4wtqf.png",
+        })
+
         Elib.Config:AddValue(
             "Elib", "client", "general",
             "theme", "Theme Preset",

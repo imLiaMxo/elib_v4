@@ -177,8 +177,14 @@ net.Receive("Elib.Config.Save", function(_, ply)
     local value    = net.ReadType()
 
     local a = Elib.Config.Addons[addon]
-    if not a or not a.server or not a.server[category] or not a.server[category][id] then
-        log:Warn(string.format("Save: unknown entry %s.%s.%s from %s", addon, category, id, ply:Nick()))
+    local entry = a and a.server and a.server[category] and a.server[category][id]
+
+    // If the entry isn't registered on this server (e.g. demo addon enabled client-side
+    // but not server-side), still persist the raw value so it's not silently discarded.
+    // We skip SetValue/onComplete/broadcast since we have no local metadata for it.
+    if not entry then
+        log:Debug(string.format("Save: persisting unregistered entry %s.%s.%s from %s (addon may be disabled server-side)", addon, category, id, ply:Nick()))
+        persist(addon, category, id, value)
         return
     end
 
@@ -189,7 +195,6 @@ net.Receive("Elib.Config.Save", function(_, ply)
 
     Elib.Config.BroadcastToAdmins()
 
-    local entry = a.server[category][id]
     if entry.network then
         local snapshot = {
             [addon] = {

@@ -173,21 +173,37 @@ function PANEL:PerformLayout(w, h)
         end
     end
 
+    local sidebarW = 0
     if IsValid(self.Sidebar) then
-        self.Sidebar:SetPos(0, headerH)
-        self.Sidebar:SetSize(Elib.Scale(self:GetSidebarWidth()), h - headerH)
+        local fullW = Elib.Scale(self:GetSidebarWidth())
+
+        // Store the intended full width so the sidebar Think can lerp correctly.
+        // Only update ExpandedWidth when not mid-collapse so we do not corrupt the target.
+        if not self.Sidebar.Collapsed and self.Sidebar.CollapseAmount < 0.05 then
+            self.Sidebar.ExpandedWidth = fullW
+        end
+
+        // While animating, only set height; the sidebar Think owns width.
+        if self.Sidebar.Animating then
+            self.Sidebar:SetPos(0, headerH)
+            self.Sidebar:SetTall(h - headerH)
+        else
+            self.Sidebar:SetPos(0, headerH)
+            self.Sidebar:SetSize(self.Sidebar.ExpandedWidth or fullW, h - headerH)
+        end
+
+        sidebarW = self.Sidebar:GetWide()
     end
 
     local navbarH = 0
     if IsValid(self.Navbar) then
         navbarH = self:GetNavbarHeight()
-        local navX = IsValid(self.Sidebar) and Elib.Scale(self:GetSidebarWidth()) or 0
-        self.Navbar:SetPos(navX, headerH)
-        self.Navbar:SetSize(w - navX, navbarH)
+        self.Navbar:SetPos(sidebarW, headerH)
+        self.Navbar:SetSize(w - sidebarW, navbarH)
     end
 
     local padding    = Elib.Scale(self:GetPadding())
-    local leftOffset = IsValid(self.Sidebar) and Elib.Scale(self:GetSidebarWidth()) + padding or padding
+    local leftOffset = IsValid(self.Sidebar) and sidebarW + padding or padding
     local topOffset  = headerH + navbarH + padding
 
     self:DockPadding(leftOffset, topOffset, padding, padding)

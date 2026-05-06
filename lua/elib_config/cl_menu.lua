@@ -271,7 +271,7 @@ end
 function ROW:PerformLayout(w, h)
     if not IsValid(self.Editor) then return end
     
-    local isBool  = self.Editor:GetClassName() == "Elib.Boolean"
+    local isBool  = self.Entry and (self.Entry.type == "Boolean" or self.Entry.type == "Bool")
     local isWide  = self.Entry and (self.Entry.type == "Table" or self.Entry.type == "List")
 
     if isWide then
@@ -287,7 +287,7 @@ function ROW:PerformLayout(w, h)
     local editorW, editorH
     if isBool then
         editorH = Elib.Scale(22)
-        editorW = editorH * 1.9 
+        editorW = editorH        -- square checkbox, not wide pill
     else
         editorH = h - Elib.Scale(8)
         editorW = math.min(Elib.Scale(260), w * 0.45)
@@ -500,7 +500,14 @@ end
 
 function SAVEBAR:Think()
     local target = self.Visible and 1 or 0
-    self.SlideAmount = Lerp(FrameTime() * 10, self.SlideAmount, target)
+    local prev   = self.SlideAmount
+    self.SlideAmount = Lerp(FrameTime() * 10, prev, target)
+
+    // Drive parent layout every frame while animating so the Page resizes live
+    if math.abs(self.SlideAmount - prev) > 0.0005 then
+        local p = self:GetParent()
+        if IsValid(p) then p:InvalidateLayout(true) end
+    end
 end
 
 function SAVEBAR:PerformLayout(w, h)
@@ -519,12 +526,9 @@ function SAVEBAR:PerformLayout(w, h)
 end
 
 function SAVEBAR:Paint(w, h)
-    local a = math.Clamp(self.SlideAmount * 255, 0, 255)
+    RNDX().Rect(0, 0, w, h):Color(Elib.OffsetColor(Elib.Colors.Header, 8)):Draw()
 
-    local bg = Elib.SetColorAlpha(Elib.OffsetColor(Elib.Colors.Header, 8), a)
-    RNDX().Rect(0, 0, w, h):Color(bg):Draw()
-
-    surface.SetDrawColor(Elib.SetColorAlpha(Elib.OffsetColor(Elib.Colors.Scroller, 10), a))
+    surface.SetDrawColor(Elib.OffsetColor(Elib.Colors.Scroller, 10))
     surface.DrawRect(0, 0, w, 1)
 end
 
@@ -547,16 +551,26 @@ function MENU:Init()
     self.Body:Dock(FILL)
 
     self.SaveBar = vgui.Create("Elib.ConfigSaveBar", self.Body)
-    self.SaveBar:Dock(BOTTOM)
-    self.SaveBar:SetVisible(false)
-    self.SaveBar:SetAlpha(0)
-
     self.SaveBar.SaveBtn.DoClick   = function() self:SaveAll() end
     self.SaveBar.RevertBtn.DoClick = function() self:RevertAll() end
 
     self.Page = vgui.Create("Elib.ConfigPage", self.Body)
-    self.Page:Dock(FILL)
     self.Page.OwnerMenu = self
+
+    // Manual layout: Page fills body, SaveBar slides up from the bottom edge.
+    // SlideAmount drives how much of the bar is visible; the Page shrinks to match.
+    local menu = self
+    self.Body.PerformLayout = function(body, w, h)
+        if not IsValid(menu.SaveBar) or not IsValid(menu.Page) then return end
+        local barH    = menu.SaveBar:GetTall()
+        local visible = math.Round(barH * menu.SaveBar.SlideAmount)
+
+        menu.Page:SetPos(0, 0)
+        menu.Page:SetSize(w, h - visible)
+
+        menu.SaveBar:SetPos(0, h - visible)
+        menu.SaveBar:SetSize(w, barH)
+    end
 
     self:Populate()
 end
@@ -601,12 +615,6 @@ function MENU:RefreshDirtyState()
 
     self.SaveBar:SetVisible(count > 0)
     self.SaveBar:SetDirtyCount(count)
-
-    if count > 0 then
-        self.SaveBar:AlphaTo(255, 0.2, 0)
-    else
-        self.SaveBar:AlphaTo(0, 0.2, 0)
-    end
 end
 
 function MENU:SaveAll()

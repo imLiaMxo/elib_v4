@@ -5,6 +5,7 @@
 
 Elib         = Elib or {}
 Elib.Version = "4.0.0-alpha"
+Elib.Icon = "https://cdn.novarp.uk/uploads/1777660733991-d4wtqf.png"
 
 /////////////////////////
 // Automatic Loader
