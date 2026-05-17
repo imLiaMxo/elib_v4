@@ -3,36 +3,34 @@
 Elib.Database            = Elib.Database or {}
 Elib.Database.Registered = Elib.Database.Registered or {}
 
-if util.IsBinaryModuleInstalled("mysqloo") then
-    pcall(require, "mysqloo")
-end
-
-local DATABASE = {}
-DATABASE.__index = DATABASE
-
 local dbLog = Elib.NewLogger("Elib.Database")
 Elib.Database.Logger = dbLog
 
-local MYSQLOO_AVAILABLE = mysqloo ~= nil
-if MYSQLOO_AVAILABLE then
-    --dbLog:Success("MySQLoo detected - MySQL mode is available.")
-else
-    dbLog:Info("MySQLoo not found - only SQLite will be available.")
+if mysqloo or (util.IsBinaryModuleInstalled and util.IsBinaryModuleInstalled("mysqloo")) then
+    if not mysqloo then pcall(require, "mysqloo") end
 end
 
+-- load the related files not in the autoloader for load order reasons
+include("elib/core/database/sv_connection.lua")
+include("elib/core/database/sv_schema.lua")
+include("elib/core/database/sv_query.lua")
+include("elib/core/database/sv_migration.lua")
+include("elib/core/database/sv_model.lua")
+
 /////////////////////////
-// Instance Creation
+// DATABASE class
 /////////////////////////
-function Elib.NewDatabase(addonName)
+local DATABASE = {}
+DATABASE.__index = DATABASE
+
+local function newDatabase(addonName)
     local db = setmetatable({}, DATABASE)
 
-    db.addonName       = addonName or "Unknown"
-    db.useMySQL        = false
-    db.connected       = false
-    db.mysqlConnection = nil
-    db.queryQueue      = {}
-    db.processing      = false
-    db.debug           = false
+    db.addonName = addonName or "Unknown"
+    db.connection = nil
+    db.Schema = nil
+    db._models = {}
+    db._pendingMigrations = {}
 
     table.insert(Elib.Database.Registered, db)
 
@@ -40,284 +38,299 @@ function Elib.NewDatabase(addonName)
     return db
 end
 
+Elib.NewDatabase = newDatabase
+Elib.Database.New = newDatabase
+
 /////////////////////////
 // Configuration
 /////////////////////////
-function DATABASE:UseMySQL(enabled)
-    if enabled and not MYSQLOO_AVAILABLE then
-        dbLog:Error("Cannot enable MySQL for " .. self.addonName .. " - MySQLoo is not installed.")
+function DATABASE:Configure(config)
+    config = config or {}
+    config.label = self.addonName
+
+    self.connection = Elib.Database.NewConnection(config)
+    self.Schema = Elib.Database.NewSchema(self.connection)
+    return self
+end
+
+function DATABASE:IsConnected()
+    return self.connection and self.connection:IsConnected() or false
+end
+
+function DATABASE:UseMySQL(enabledOrConfig)
+    if type(enabledOrConfig) == "table" then
+        enabledOrConfig.driver = "mysql"
+        return self:Configure(enabledOrConfig)
+    end
+
+    if enabledOrConfig and not Elib.Database.MySQLAvailable then
+        dbLog:Error(self.addonName .. ": cannot enable MySQL - mysqloo not installed")
         return false
     end
 
-    self.useMySQL = enabled == true
-
-    if self.useMySQL then
-        dbLog:Info(self.addonName .. " switched to MySQL mode.")
-    else
-        dbLog:Info(self.addonName .. " switched to SQLite mode.")
-    end
-
+    self._legacyUseMySQL = enabledOrConfig == true
     return true
 end
 
 function DATABASE:SetDebug(enabled)
-    self.debug = enabled == true
-end
-
-function DATABASE:IsConnected()
-    return self.connected
+    if self.connection then self.connection:SetDebug(enabled) end
 end
 
 /////////////////////////
 // Connection
 /////////////////////////
+// Returns a Promise that resolves with the database when ready.
 function DATABASE:Connect(host, username, password, database, port)
-    if not self.useMySQL then
-        self.connected = true
-        dbLog:Success(self.addonName .. " is using SQLite (no connection required).")
-        return true
+    if type(host) == "string" then
+        return self:Configure({
+            driver   = self._legacyUseMySQL and "mysql" or "mysql",
+            host     = host,
+            username = username,
+            password = password,
+            database = database,
+            port     = port,
+        }):Connect()
     end
 
-    if not MYSQLOO_AVAILABLE then
-        dbLog:Error("Cannot connect - MySQLoo is not installed.")
-        return false
+    if not self.connection then
+        self:Configure({ driver = "sqlite" })
     end
 
-    port = port or 3306
+    return self.connection:Connect():next(function()
+        if #self._pendingMigrations == 0 then return self end
 
-    self.mysqlConnection = mysqloo.connect(host, username, password, database, port)
+        local pending = self._pendingMigrations
+        self._pendingMigrations = {}
 
-    self.mysqlConnection.onConnected = function()
-        self.connected = true
-        dbLog:Success(self.addonName .. " connected to MySQL (" .. host .. ":" .. port .. ").")
-        self:ProcessQueue()
-    end
-
-    self.mysqlConnection.onConnectionFailed = function(_, err)
-        self.connected = false
-        dbLog:Error(self.addonName .. " MySQL connection failed: " .. tostring(err))
-    end
-
-    self.mysqlConnection:connect()
-    return true
+        local function runOne(i)
+            if i > #pending then return self end
+            return Elib.Database.RunMigrations(self, pending[i]):next(function() return runOne(i + 1) end)
+        end
+        return runOne(1)
+    end)
 end
 
 function DATABASE:Disconnect()
-    if self.useMySQL and self.mysqlConnection then
-        self.mysqlConnection:disconnect()
-        self.connected = false
-        dbLog:Info(self.addonName .. " disconnected from MySQL.")
+    if self.connection then
+        self.connection:Disconnect()
+        dbLog:Info(self.addonName .. " disconnected")
     end
 end
 
 /////////////////////////
-// Escaping & Formatting
+// Raw query passthrough
 /////////////////////////
-function DATABASE:Escape(str)
-    if str == nil then return "" end
-
-    if self.useMySQL and self.mysqlConnection then
-        return self.mysqlConnection:escape(tostring(str))
-    end
-
-    return sql.SQLStr(tostring(str), true)
+function DATABASE:Query(query, params)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    return self.connection:Query(query, params)
 end
 
-local function toLiteral(db, value)
-    local t = type(value)
-
-    if t == "string" then
-        return "'" .. db:Escape(value) .. "'"
-    elseif t == "number" then
-        return tostring(value)
-    elseif t == "boolean" then
-        return value and "1" or "0"
-    elseif value == nil then
-        return "NULL"
-    end
-
-    return "'" .. db:Escape(tostring(value)) .. "'"
+function DATABASE:Execute(query, params)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    return self.connection:Execute(query, params)
 end
 
-function DATABASE:Format(query, ...)
-    local args    = { ... }
-    local escaped = {}
+function DATABASE:QueryRow(query, params)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    return self.connection:QueryRow(query, params)
+end
 
-    for i, arg in ipairs(args) do
-        if type(arg) == "string" then
-            escaped[i] = self:Escape(arg)
-        elseif type(arg) == "number" then
-            escaped[i] = tostring(arg)
-        elseif type(arg) == "boolean" then
-            escaped[i] = arg and "1" or "0"
-        elseif arg == nil then
-            escaped[i] = "NULL"
-        else
-            escaped[i] = self:Escape(tostring(arg))
-        end
-    end
+function DATABASE:QueryValue(query, params)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    return self.connection:QueryValue(query, params)
+end
 
-    return string.format(query, unpack(escaped))
+function DATABASE:Escape(value)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    return self.connection:Escape(value)
 end
 
 /////////////////////////
-// Query Execution
+// Query builder entry point
 /////////////////////////
-function DATABASE:Query(query, callback, errorCallback)
-    if self.debug then
-        dbLog:Debug("[" .. self.addonName .. "] " .. query)
-    end
-
-    if self.useMySQL then
-        return self:QueryMySQL(query, callback, errorCallback)
-    end
-
-    return self:QuerySQLite(query, callback, errorCallback)
+function DATABASE:Table(name)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    return Elib.Database.NewQuery(self.connection, name)
 end
 
-function DATABASE:QuerySQLite(query, callback, errorCallback)
-    local result = sql.Query(query)
+DATABASE.From = DATABASE.Table
 
-    if result == false then
-        local err = sql.LastError()
-        dbLog:Error("[" .. self.addonName .. "] SQLite error: " .. err)
-        dbLog:Error("Query was: " .. query)
+/////////////////////////
+// Schema convenience
+/////////////////////////
+function DATABASE:CreateTable(name, definerOrColumns, callback, errorCallback)
+    if not self.Schema then self:Configure({ driver = "sqlite" }) end
 
-        if errorCallback then errorCallback(err) end
-        return false, err
+    if type(definerOrColumns) == "function" then
+        return self.Schema:Create(name, definerOrColumns)
     end
 
-    if callback then callback(result or {}) end
-    return true, result
+    return self:CreateTableLegacy(name, definerOrColumns, callback, errorCallback)
 end
 
-function DATABASE:QueryMySQL(query, callback, errorCallback)
-    if not self.connected then
-        table.insert(self.queryQueue, {
-            query         = query,
-            callback      = callback,
-            errorCallback = errorCallback,
-        })
-        return
-    end
-
-    local q = self.mysqlConnection:query(query)
-
-    q.onSuccess = function(_, data)
-        if callback then callback(data or {}) end
-    end
-
-    q.onError = function(_, err)
-        dbLog:Error("[" .. self.addonName .. "] MySQL error: " .. err)
-        dbLog:Error("Query was: " .. query)
-        if errorCallback then errorCallback(err) end
-    end
-
-    q:start()
-    return q
+function DATABASE:DropTable(name)
+    if not self.Schema then self:Configure({ driver = "sqlite" }) end
+    return self.Schema:Drop(name)
 end
 
-function DATABASE:ProcessQueue()
-    if self.processing or not self.connected then return end
-    if #self.queryQueue == 0 then return end
-
-    self.processing = true
-
-    local queue     = self.queryQueue
-    self.queryQueue = {}
-
-    for _, data in ipairs(queue) do
-        self:QueryMySQL(data.query, data.callback, data.errorCallback)
-    end
-
-    self.processing = false
+function DATABASE:HasTable(name)
+    if not self.Schema then self:Configure({ driver = "sqlite" }) end
+    return self.Schema:Has(name)
 end
 
 /////////////////////////
-// Prepared Statements (MySQL only)
+// Migrations
 /////////////////////////
-function DATABASE:Prepare(query)
-    if not self.useMySQL then
-        dbLog:Error("[" .. self.addonName .. "] Prepared statements require MySQL.")
-        return nil
+function DATABASE:LoadMigrations(path)
+    if not self:IsConnected() then
+        table.insert(self._pendingMigrations, path)
+        local p = Elib.Deferred.new()
+        p:resolve({})
+        return p
     end
 
-    if not self.connected or not self.mysqlConnection then
-        dbLog:Error("[" .. self.addonName .. "] Cannot prepare statement - not connected.")
-        return nil
-    end
+    return Elib.Database.RunMigrations(self, path)
+end
 
-    return self.mysqlConnection:prepare(query)
+function DATABASE:MarkMigrationApplied(name)
+    return Elib.Database.MarkMigrationApplied(self, name)
+end
+
+/////////////////////////
+// Models
+/////////////////////////
+function DATABASE:DefineModel(name, config)
+    local model = Elib.Database.NewModel(self, name, config)
+    self._models[name] = model
+    return model
+end
+
+function DATABASE:GetModel(name)
+    return self._models[name]
 end
 
 /////////////////////////
 // Transactions
 /////////////////////////
-function DATABASE:BeginTransaction(callback, errorCallback)
-    self:Query(self.useMySQL and "START TRANSACTION" or "BEGIN TRANSACTION", callback, errorCallback)
-end
+function DATABASE:Transaction(body)
+    local conn = self.connection
+    if not conn then
+        local p = Elib.Deferred.new()
+        p:reject("not configured")
+        return p
+    end
 
-function DATABASE:Commit(callback, errorCallback)
-    self:Query("COMMIT", callback, errorCallback)
-end
+    local beginSQL  = conn:IsMySQL() and "START TRANSACTION" or "BEGIN TRANSACTION"
+    local commitSQL = "COMMIT"
+    local rollSQL   = "ROLLBACK"
 
-function DATABASE:Rollback(callback, errorCallback)
-    self:Query("ROLLBACK", callback, errorCallback)
-end
-
-function DATABASE:Transaction(queries, callback, errorCallback)
-    self:BeginTransaction(function()
-        local completed = 0
-        local failed    = false
-
-        local function checkComplete()
-            completed = completed + 1
-            if failed then return end
-
-            if completed >= #queries then
-                self:Commit(function()
-                    if callback then callback() end
-                end, errorCallback)
-            end
-        end
-
-        local function onError(err)
-            if failed then return end
-            failed = true
-            self:Rollback(function()
-                if errorCallback then errorCallback(err) end
+    return conn:Execute(beginSQL):next(function()
+        local ok, result = pcall(body, self)
+        if not ok then
+            return conn:Execute(rollSQL):next(function()
+                return Elib.Deferred.new():reject(result)
             end)
         end
 
-        for _, query in ipairs(queries) do
-            self:Query(query, checkComplete, onError)
+        // body returned a promise chain on it.
+        if type(result) == "table" and type(result.next) == "function" then
+            return result:next(function(value)
+                return conn:Execute(commitSQL):next(function() return value end)
+            end, function(err)
+                return conn:Execute(rollSQL):next(function()
+                    return Elib.Deferred.new():reject(err)
+                end)
+            end)
         end
-    end, errorCallback)
-end
 
-/////////////////////////
-// Helpers - Schema
-/////////////////////////
-function DATABASE:TableExists(tableName, callback)
-    local query
-
-    if self.useMySQL then
-        query = string.format("SHOW TABLES LIKE '%s'", self:Escape(tableName))
-    else
-        query = string.format(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='%s'",
-            self:Escape(tableName)
-        )
-    end
-
-    self:Query(query, function(data)
-        if callback then callback(data and #data > 0) end
+        // body returned a synchronous value just commit.
+        return conn:Execute(commitSQL):next(function() return result end)
     end)
 end
 
-function DATABASE:CreateTable(tableName, columns, callback, errorCallback)
-    local columnDefs  = {}
-    local constraints = {}
+function DATABASE:BeginTransaction(callback, errorCallback)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    self.connection:Execute(self.connection:IsMySQL() and "START TRANSACTION" or "BEGIN TRANSACTION")
+        :next(function() if callback then callback() end end,
+              function(err) if errorCallback then errorCallback(err) end end)
+end
+
+function DATABASE:Commit(callback, errorCallback)
+    if not self.connection then return end
+    self.connection:Execute("COMMIT")
+        :next(function() if callback then callback() end end,
+              function(err) if errorCallback then errorCallback(err) end end)
+end
+
+function DATABASE:Rollback(callback, errorCallback)
+    if not self.connection then return end
+    self.connection:Execute("ROLLBACK")
+        :next(function() if callback then callback() end end,
+              function(err) if errorCallback then errorCallback(err) end end)
+end
+
+/////////////////////////
+// Legacy CRUD shorthands (preserved from v3)
+/////////////////////////
+function DATABASE:Insert(tableName, data, callback, errorCallback)
+    self:Table(tableName):Insert(data):Run()
+        :next(function(insertId)
+            if callback then callback(insertId) end
+        end,
+        function(err)
+            if errorCallback then errorCallback(err) end
+        end)
+end
+
+function DATABASE:Update(tableName, data, where, callback, errorCallback)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    local q = self:Table(tableName):Update(data)
+    if where and where ~= "" then q:WhereRaw(where) end
+    q:Run():next(
+        function(n) if callback then callback(n) end end,
+        function(err) if errorCallback then errorCallback(err) end end
+    )
+end
+
+function DATABASE:Delete(tableName, where, callback, errorCallback)
+    local q = self:Table(tableName):Delete()
+    if where and where ~= "" then q:WhereRaw(where) end
+    q:Run():next(
+        function(n) if callback then callback(n) end end,
+        function(err) if errorCallback then errorCallback(err) end end
+    )
+end
+
+function DATABASE:Select(tableName, columns, where, callback, errorCallback)
+    local q = self:Table(tableName)
+    if columns and columns ~= "*" then
+        if type(columns) == "table" then q:Select(unpack(columns)) else q:Select(columns) end
+    end
+    if where and where ~= "" then q:WhereRaw(where) end
+    q:Get():next(
+        function(rows) if callback then callback(rows) end end,
+        function(err) if errorCallback then errorCallback(err) end end
+    )
+end
+
+function DATABASE:Count(tableName, where, callback, errorCallback)
+    local q = self:Table(tableName)
+    if where and where ~= "" then q:WhereRaw(where) end
+    q:Count():next(
+        function(n) if callback then callback(n) end end,
+        function(err) if errorCallback then errorCallback(err) end end
+    )
+end
+
+function DATABASE:TableExists(tableName, callback)
+    self:HasTable(tableName):next(function(exists)
+        if callback then callback(exists) end
+    end)
+end
+
+function DATABASE:CreateTableLegacy(tableName, columns, callback, errorCallback)
+    local conn = self.connection
+    local columnDefs, constraints = {}, {}
 
     for name, def in pairs(columns) do
         if name == "PRIMARY" or name == "UNIQUE" or name == "INDEX" then
@@ -337,83 +350,53 @@ function DATABASE:CreateTable(tableName, columns, callback, errorCallback)
         table.concat(columnDefs, ", ")
     )
 
-    self:Query(query, callback, errorCallback)
+    self:Execute(query):next(
+        function() if callback then callback() end end,
+        function(err) if errorCallback then errorCallback(err) end end
+    )
 end
 
-function DATABASE:DropTable(tableName, callback, errorCallback)
-    self:Query(string.format("DROP TABLE IF EXISTS %s", tableName), callback, errorCallback)
+function DATABASE:Prepare(query)
+    if not self.connection or not self.connection:IsMySQL() then
+        dbLog:Error(self.addonName .. ": prepared statements require MySQL")
+        return nil
+    end
+    if not self.connection.handle then
+        dbLog:Error(self.addonName .. ": cannot prepare - not connected")
+        return nil
+    end
+    return self.connection.handle:prepare(query)
 end
 
 /////////////////////////
-// Helpers
+// Format helper (legacy)
 /////////////////////////
-function DATABASE:Insert(tableName, data, callback, errorCallback)
-    local columns = {}
-    local values  = {}
-
-    for col, val in pairs(data) do
-        columns[#columns + 1] = col
-        values[#values + 1]   = toLiteral(self, val)
-    end
-
-    local query = string.format(
-        "INSERT INTO %s (%s) VALUES (%s)",
-        tableName,
-        table.concat(columns, ", "),
-        table.concat(values, ", ")
-    )
-
-    self:Query(query, callback, errorCallback)
-end
-
-function DATABASE:Update(tableName, data, where, callback, errorCallback)
-    local sets = {}
-
-    for col, val in pairs(data) do
-        sets[#sets + 1] = col .. " = " .. toLiteral(self, val)
-    end
-
-    local query = string.format(
-        "UPDATE %s SET %s WHERE %s",
-        tableName,
-        table.concat(sets, ", "),
-        where
-    )
-
-    self:Query(query, callback, errorCallback)
-end
-
-function DATABASE:Delete(tableName, where, callback, errorCallback)
-    self:Query(string.format("DELETE FROM %s WHERE %s", tableName, where), callback, errorCallback)
-end
-
-function DATABASE:Select(tableName, columns, where, callback, errorCallback)
-    local columnStr = type(columns) == "table" and table.concat(columns, ", ") or (columns or "*")
-    local whereStr  = where and (" WHERE " .. where) or ""
-
-    self:Query(
-        string.format("SELECT %s FROM %s%s", columnStr, tableName, whereStr),
-        callback,
-        errorCallback
-    )
-end
-
-function DATABASE:Count(tableName, where, callback, errorCallback)
-    local whereStr = where and (" WHERE " .. where) or ""
-
-    self:Query(
-        string.format("SELECT COUNT(*) as count FROM %s%s", tableName, whereStr),
-        function(data)
-            if callback and data and data[1] then
-                callback(tonumber(data[1].count) or 0)
+function DATABASE:Format(query, ...)
+    if not self.connection then self:Configure({ driver = "sqlite" }) end
+    local args = { ... }
+    local out = {}
+    for i, arg in ipairs(args) do
+        if type(arg) == "string" then
+            local esc = self.connection:Escape(arg)
+            if esc:sub(1, 1) == "'" and esc:sub(-1) == "'" then
+                esc = esc:sub(2, -2)
             end
-        end,
-        errorCallback
-    )
+            out[i] = esc
+        elseif type(arg) == "number" then
+            out[i] = tostring(arg)
+        elseif type(arg) == "boolean" then
+            out[i] = arg and "1" or "0"
+        elseif arg == nil then
+            out[i] = "NULL"
+        else
+            out[i] = self.connection:Escape(tostring(arg))
+        end
+    end
+    return string.format(query, unpack(out))
 end
 
 /////////////////////////
-// Global Cleanup
+// Global cleanup
 /////////////////////////
 hook.Add("ShutDown", "Elib.Database.Cleanup", function()
     for _, db in ipairs(Elib.Database.Registered) do

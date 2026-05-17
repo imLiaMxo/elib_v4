@@ -1,4 +1,13 @@
 // Made by Eve Haddox & imLiaMxo
+//
+// Server-side persistence for Elib.Config.
+//
+// Rewritten on top of Elib v4's new database module: declarative migrations,
+// a chainable promise-based query builder, and a thin Model wrapper for typed
+// reads. The on-disk shape and the public API surface
+// (`Elib.Config.Save`, `Elib.Config.LoadSavedSettings`,
+// `Elib.Config.BroadcastToAdmins`) are unchanged so the menu, networking and
+// any addons that read `entry.value` keep working without changes.
 
 local log = Elib.Config.Log
 local TABLE_NAME = "elib_config_server"
@@ -20,23 +29,47 @@ end
 Elib.Config.CanEdit = canEdit
 
 /////////////////////////
-// Database
+// Database setup
 /////////////////////////
+// SQLite by default. To switch to MySQL drop in a config table:
+//   db:Configure({ driver = "mysql", host = ..., username = ..., password = ..., database = ..., port = ... })
+// before :Connect() is called (or just call db:UseMySQL({...}) which does the
+// same thing with the driver pre-set).
 local db = Elib.NewDatabase("Elib.Config")
-db:Connect()
+db:Configure({ driver = "sqlite" })
 Elib.Config.DB = db
 
 /////////////////////////
-// Schema
+// Model
 /////////////////////////
-db:CreateTable(TABLE_NAME, {
-    addon    = "TEXT",
-    category = "TEXT",
-    id       = "TEXT",
-    value    = "TEXT",
-    vtype    = "TEXT",
-    PRIMARY  = "KEY(addon, category, id)",
+// ConfigSetting wraps a row in elib_config_server. The table has a composite
+// primary key (addon, category, id) so we don't use instance :Save() - writes
+// go through the query builder's :Upsert() instead. The model is still useful
+// for typed reads via :All() and for ad-hoc queries from other code.
+local ConfigSetting = db:DefineModel("ConfigSetting", {
+    table    = TABLE_NAME,
+    fillable = { "addon", "category", "id", "value", "vtype" },
 })
+Elib.Config.ConfigSettingModel = ConfigSetting
+
+/////////////////////////
+// Connect, migrate, then load
+/////////////////////////
+// Migrations are queued before :Connect() so the connect promise resolves only
+// after the schema is in place. The 0.1s timer matches the original behaviour
+// of giving other addons a tick to register their config values before we
+// stamp saved values on top.
+db:LoadMigrations("elib_config/migrations")
+
+db:Connect():next(function()
+    log:Info("Database ready")
+    timer.Simple(0.1, function()
+        Elib.Config.LoadSavedSettings()
+        Elib.Config.BroadcastToAdmins()
+    end)
+end, function(err)
+    log:Error("Database initialisation failed: " .. tostring(err))
+end)
 
 /////////////////////////
 // Serialization
@@ -85,21 +118,27 @@ end
 /////////////////////////
 // Persistence
 /////////////////////////
+// Upsert handles both fresh inserts and overwrites with one round-trip - on
+// MySQL it emits ON DUPLICATE KEY UPDATE, on SQLite ON CONFLICT ... DO UPDATE.
 local function persist(addon, category, id, value)
     local strValue, vtype = serialize(value)
 
-    local q = db:Format(
-        "INSERT OR REPLACE INTO " .. TABLE_NAME .. " (addon, category, id, value, vtype) VALUES ('%s', '%s', '%s', '%s', '%s')",
-        addon, category, id, strValue, vtype
-    )
-
-    db:Query(q, nil, function(err)
-        log:Error("Save failed: " .. tostring(err))
-    end)
+    db:Table(TABLE_NAME)
+        :Upsert({
+            addon    = addon,
+            category = category,
+            id       = id,
+            value    = strValue,
+            vtype    = vtype,
+        }, { "addon", "category", "id" })
+        :Run()
+        :next(nil, function(err)
+            log:Error("Save failed: " .. tostring(err))
+        end)
 end
 
 function Elib.Config.LoadSavedSettings()
-    db:Select(TABLE_NAME, "*", nil, function(rows)
+    ConfigSetting:All():next(function(rows)
         if not rows then return end
 
         for _, row in ipairs(rows) do
@@ -110,6 +149,8 @@ function Elib.Config.LoadSavedSettings()
                 addon.server[row.category][row.id].value = value
             end
         end
+    end, function(err)
+        log:Error("Load failed: " .. tostring(err))
     end)
 end
 
@@ -217,13 +258,8 @@ net.Receive("Elib.Config.Save", function(_, ply)
 end)
 
 /////////////////////////
-// Initial load & join hooks
+// Join hook
 /////////////////////////
-timer.Simple(0.1, function()
-    Elib.Config.LoadSavedSettings()
-    Elib.Config.BroadcastToAdmins()
-end)
-
 hook.Add("PlayerInitialSpawn", "Elib.Config.PushOnJoin", function(ply)
     timer.Simple(0.5, function()
         if not IsValid(ply) then return end
